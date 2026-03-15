@@ -1,0 +1,257 @@
+{
+  "name": "Website Monitor via Telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": {}
+      },
+      "id": "telegram-trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const msg = $input.item.json.message || {};\nlet text = msg.text || msg.caption || '';\nconst chatId = msg.chat ? msg.chat.id : 0;\n\nconst isRemoveCommand = text.trim().toLowerCase().startsWith('/remove');\nconst isListCommand = text.trim().toLowerCase().startsWith('/list');\nconst isHelpCommand = text.trim().toLowerCase().startsWith('/help') || text.trim().toLowerCase().startsWith('/start');\n\nlet action = 'add';\nlet url = '';\n\nif (isHelpCommand) {\n  action = 'help';\n} else if (isListCommand) {\n  action = 'list';\n} else if (isRemoveCommand) {\n  action = 'remove';\n  const parts = text.trim().split(/\\s+/);\n  if (parts.length >= 2) {\n    url = parts[1];\n    if (!url.startsWith('http://') && !url.startsWith('https://')) {\n      url = 'https://' + url;\n    }\n  }\n} else {\n  const urlRegex = /https?:\\/\\/[^\\s]+/gi;\n  const matches = text.match(urlRegex);\n  if (matches && matches.length > 0) {\n    url = matches[0];\n  } else {\n    const domainRegex = /([a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}(\\/[^\\s]*)?/gi;\n    const domainMatches = text.match(domainRegex);\n    if (domainMatches && domainMatches.length > 0) {\n      url = 'https://' + domainMatches[0];\n    }\n  }\n}\n\nreturn { json: { action, url, chatId, originalText: text } };"
+      },
+      "id": "parse-message",
+      "name": "Parse Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+                "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "remove", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputLabel": "Remove"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+                "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "list", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputLabel": "List"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+                "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "help", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputLabel": "Help"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+                "conditions": [
+                  { "leftValue": "={{ $json.action }}", "rightValue": "add", "operator": { "type": "string", "operation": "equals" } },
+                  { "leftValue": "={{ $json.url }}", "rightValue": "", "operator": { "type": "string", "operation": "notEquals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputLabel": "Add"
+            }
+          ]
+        },
+        "options": { "allMatchingOutputs": false }
+      },
+      "id": "route-action",
+      "name": "Route Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nif (!staticData.sites) staticData.sites = {};\n\nconst url = $input.item.json.url;\nconst chatId = $input.item.json.chatId;\n\nlet message = '';\nif (url && staticData.sites[url]) {\n  const siteName = staticData.sites[url].name;\n  delete staticData.sites[url];\n  message = '🗑 Сайт удален из мониторинга:\\n🌐 ' + siteName + '\\n🔗 ' + url;\n} else {\n  message = '⚠️ Сайт не найден в мониторинге:\\n🔗 ' + (url || '(пусто)');\n}\n\nreturn { json: { message, chatId } };"
+      },
+      "id": "remove-site",
+      "name": "Remove Site",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 120]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst chatId = $input.item.json.chatId;\n\nif (!staticData.sites || Object.keys(staticData.sites).length === 0) {\n  return { json: { message: '📋 Список мониторинга пуст.\\nОтправьте URL чтобы добавить сайт.', chatId } };\n}\n\nconst sites = Object.values(staticData.sites);\nlet msg = '📋 Сайты в мониторинге (' + sites.length + '):\\n\\n';\nsites.forEach((site, i) => {\n  const icon = site.status === 'up' ? '🟢' : site.status === 'down' ? '🔴' : '⚪';\n  msg += (i+1) + '. ' + icon + ' ' + site.name + '\\n   ' + site.url + '\\n';\n});\n\nreturn { json: { message: msg, chatId } };"
+      },
+      "id": "list-sites",
+      "name": "List Sites",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 260]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const chatId = $input.item.json.chatId;\nconst msg = '🤖 Website Monitor Bot\\n\\n' +\n  '📌 Команды:\\n\\n' +\n  '➕ Добавить сайт:\\n   Просто отправьте URL\\n   Пример: https://google.com\\n\\n' +\n  '➖ Удалить сайт:\\n   /remove https://google.com\\n\\n' +\n  '📋 Список сайтов:\\n   /list\\n\\n' +\n  '❓ Помощь:\\n   /help\\n\\n' +\n  '⏱ Проверка каждые 60 секунд\\n' +\n  '🔴 Алерт при падении сайта\\n' +\n  '🟢 Уведомление при восстановлении';\n\nreturn { json: { message: msg, chatId } };"
+      },
+      "id": "help-message",
+      "name": "Help Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nif (!staticData.sites) staticData.sites = {};\n\nconst url = $input.item.json.url;\nconst chatId = $input.item.json.chatId;\n\nlet siteName = url;\ntry { siteName = new URL(url).hostname; } catch(e) {}\n\nstaticData.sites[url] = {\n  url, name: siteName, chatId,\n  status: 'unknown', lastAlert: null,\n  addedAt: new Date().toISOString()\n};\n\nreturn { json: { message: '✅ Сайт добавлен в мониторинг:\\n🌐 ' + siteName + '\\n🔗 ' + url, chatId } };"
+      },
+      "id": "add-site",
+      "name": "Add Site",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 540]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {}
+      },
+      "id": "send-confirmation",
+      "name": "Send Confirmation",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1220, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 1 }]
+        }
+      },
+      "id": "cron-check",
+      "name": "Every 1 Minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [220, 780]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\n\nif (!staticData.sites || Object.keys(staticData.sites).length === 0) {\n  return [];\n}\n\nconst results = [];\nconst sites = Object.values(staticData.sites);\n\nfor (const site of sites) {\n  let statusCode = 0;\n  let isUp = false;\n  let errorInfo = '';\n\n  try {\n    const resp = await this.helpers.httpRequest({\n      method: 'GET',\n      url: site.url,\n      timeout: 10000,\n      returnFullResponse: true,\n      ignoreHttpStatusErrors: true,\n    });\n    statusCode = resp.statusCode || 200;\n    isUp = (statusCode >= 200 && statusCode < 400);\n    if (!isUp) errorInfo = 'HTTP ' + statusCode;\n  } catch (error) {\n    errorInfo = error.message || error.code || 'Connection failed';\n    isUp = false;\n  }\n\n  const previousStatus = site.status || 'unknown';\n  const currentStatus = isUp ? 'up' : 'down';\n  let action = 'none';\n\n  if (!isUp && previousStatus !== 'down') {\n    action = 'alert_down';\n  } else if (isUp && previousStatus === 'down') {\n    action = 'alert_recovered';\n  }\n\n  staticData.sites[site.url].status = currentStatus;\n\n  if (action !== 'none') {\n    const now = new Date().toISOString();\n    staticData.sites[site.url].lastAlert = now;\n\n    let message = '';\n    if (action === 'alert_down') {\n      message = '🔴 САЙТ НЕДОСТУПЕН\\n\\n' +\n        '🌐 Сайт: ' + site.name + '\\n' +\n        '🔗 URL: ' + site.url + '\\n' +\n        '❌ Ошибка: ' + errorInfo + '\\n' +\n        '🕐 Время: ' + now + '\\n\\n' +\n        '⚠️ Повторный алерт не будет отправлен до восстановления.';\n    } else {\n      message = '🟢 САЙТ ВОССТАНОВЛЕН\\n\\n' +\n        '🌐 Сайт: ' + site.name + '\\n' +\n        '🔗 URL: ' + site.url + '\\n' +\n        '✅ Статус: OK (' + statusCode + ')\\n' +\n        '🕐 Время: ' + now;\n    }\n\n    results.push({ json: { chatId: site.chatId, message, action, url: site.url } });\n  }\n}\n\nreturn results;"
+      },
+      "id": "check-all-sites",
+      "name": "Check All Sites",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 780]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "has-message",
+              "leftValue": "={{ $json.message }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEquals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "has-alerts",
+      "name": "Has Alerts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [780, 780]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {}
+      },
+      "id": "send-alert",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1040, 740],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[{ "node": "Parse Message", "type": "main", "index": 0 }]]
+    },
+    "Parse Message": {
+      "main": [[{ "node": "Route Action", "type": "main", "index": 0 }]]
+    },
+    "Route Action": {
+      "main": [
+        [{ "node": "Remove Site", "type": "main", "index": 0 }],
+        [{ "node": "List Sites", "type": "main", "index": 0 }],
+        [{ "node": "Help Message", "type": "main", "index": 0 }],
+        [{ "node": "Add Site", "type": "main", "index": 0 }]
+      ]
+    },
+    "Remove Site": {
+      "main": [[{ "node": "Send Confirmation", "type": "main", "index": 0 }]]
+    },
+    "List Sites": {
+      "main": [[{ "node": "Send Confirmation", "type": "main", "index": 0 }]]
+    },
+    "Help Message": {
+      "main": [[{ "node": "Send Confirmation", "type": "main", "index": 0 }]]
+    },
+    "Add Site": {
+      "main": [[{ "node": "Send Confirmation", "type": "main", "index": 0 }]]
+    },
+    "Every 1 Minute": {
+      "main": [[{ "node": "Check All Sites", "type": "main", "index": 0 }]]
+    },
+    "Check All Sites": {
+      "main": [[{ "node": "Has Alerts?", "type": "main", "index": 0 }]]
+    },
+    "Has Alerts?": {
+      "main": [
+        [{ "node": "Send Alert", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": { "global": { "sites": {} } },
+  "tags": [{ "name": "monitoring", "id": "1" }, { "name": "telegram", "id": "2" }],
+  "pinData": {},
+  "versionId": "3"
+}
